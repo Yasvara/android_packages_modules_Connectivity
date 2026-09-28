@@ -66,5 +66,9 @@ service bpfloader /apex/com.android.tethering/bin/netbpfload
     #    'cannot prove return value is 0 or 1' or 'unsupported / unknown operation / helper',
     #    'invalid bpf_context access', etc.
     #
-    reboot_on_failure reboot,bpfloader-failed
+    # On 4.9 kernels bpfloader cannot load newer programs (verifier
+    # rejects missing helpers); do not reboot so boot can proceed and
+    # real bpfloader logs can be collected via adb. Our BpfHandler runs
+    # best-effort without the missing programs.
+    # reboot_on_failure reboot,bpfloader-failed
     override

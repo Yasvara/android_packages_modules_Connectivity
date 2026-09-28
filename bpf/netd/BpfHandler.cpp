@@ -146,8 +146,23 @@ static Result<void> initPrograms(const char* cg2_path) {
     RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_DENYLIST_PROG_PATH));
     RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_EGRESS_PROG_PATH));
     RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_INGRESS_PROG_PATH));
-    RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS));
-    RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS));
+    // Kernels 4.9 cannot run the cgroup_skb stats programs
+    // (missing BPF helpers), so the loader pins nothing for them. Run
+    // without traffic accounting instead of aborting netd.
+    bool egressStatsAttached = false;
+    bool ingressStatsAttached = false;
+    if (auto res = attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS);
+        !res.ok()) {
+        ALOGW("Continuing without egress stats program");
+    } else {
+        egressStatsAttached = true;
+    }
+    if (auto res = attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS);
+        !res.ok()) {
+        ALOGW("Continuing without ingress stats program");
+    } else {
+        ingressStatsAttached = true;
+    }
 
     // For the devices that support cgroup socket filter, the socket filter
     // should be loaded successfully by bpfloader. So we attach the filter to
@@ -159,9 +174,20 @@ static Result<void> initPrograms(const char* cg2_path) {
                                     cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     }
 
+    // BPF_PROG_QUERY needs 4.19+, so the self-check aborts below
+    // can never pass on 4.9. Note the isAtLeastKernelVersion() gates are
+    // compile-time no-ops for this APEX (minSupportedKernelVer 5.10), and
+    // the parsed kernelVer cannot be trusted here, so probe the syscall
+    // directly instead: SOCK_CREATE was just attached above, a positive
+    // query result proves BPF_PROG_QUERY works.
+    const bool hasProgQuery =
+            queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) > 0;
+    if (!hasProgQuery) ALOGW("Continuing without BPF_PROG_QUERY self-checks");
+
     if (isAtLeastKernelVersion(5, 10)) {
-        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
-                                    cg_fd, BPF_CGROUP_INET_SOCK_RELEASE));
+        auto res = attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
+                                         cg_fd, BPF_CGROUP_INET_SOCK_RELEASE);
+        if (!res.ok()) ALOGW("Continuing without release program");
     }
 
     if (isAtLeastV) {
@@ -187,7 +213,9 @@ static Result<void> initPrograms(const char* cg2_path) {
                                         cg_fd, BPF_CGROUP_GETSOCKOPT));
             RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SETSOCKOPT_PROG_PATH,
                                         cg_fd, BPF_CGROUP_SETSOCKOPT));
-            getsockoptTest();
+            // getsockoptTest needs backported 5.10+ socket options;
+            // the gate above is a compile-time no-op for this APEX.
+            if (bpf::kernelVer >= KVER(5, 10, 0)) getsockoptTest();
         }
     }
 
@@ -206,21 +234,24 @@ static Result<void> initPrograms(const char* cg2_path) {
 
         // This should trivially pass, since we just attached up above,
         // but BPF_PROG_QUERY is only implemented on 4.19+ kernels.
-        if (queryProgram(cg_fd, BPF_CGROUP_INET_EGRESS) <= 0) abort();
-        if (queryProgram(cg_fd, BPF_CGROUP_INET_INGRESS) <= 0) abort();
-        if (queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) <= 0) abort();
-        if (queryProgram(cg_fd, BPF_CGROUP_INET4_BIND) <= 0) abort();
-        if (queryProgram(cg_fd, BPF_CGROUP_INET6_BIND) <= 0) abort();
+        // skip these self-checks where BPF_PROG_QUERY is missing.
+        if (hasProgQuery) {
+            if (egressStatsAttached && queryProgram(cg_fd, BPF_CGROUP_INET_EGRESS) <= 0) abort();
+            if (ingressStatsAttached && queryProgram(cg_fd, BPF_CGROUP_INET_INGRESS) <= 0) abort();
+            if (queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) <= 0) abort();
+            if (queryProgram(cg_fd, BPF_CGROUP_INET4_BIND) <= 0) abort();
+            if (queryProgram(cg_fd, BPF_CGROUP_INET6_BIND) <= 0) abort();
+        }
     }
 
     if (isAtLeastKernelVersion(5, 10)) {
-        if (queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
+        if (hasProgQuery && queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
     }
 
     if (isAtLeastV) {
         // V requires 4.19+, so technically this 2nd 'if' is not required, but it
         // doesn't hurt us to try to support AOSP forks that try to support older kernels.
-        if (isAtLeastKernelVersion(4, 19)) {
+        if (isAtLeastKernelVersion(4, 19) && hasProgQuery) {
             if (queryProgram(cg_fd, BPF_CGROUP_INET4_CONNECT) <= 0) abort();
             if (queryProgram(cg_fd, BPF_CGROUP_INET6_CONNECT) <= 0) abort();
             if (queryProgram(cg_fd, BPF_CGROUP_UDP4_RECVMSG) <= 0) abort();
@@ -229,14 +260,14 @@ static Result<void> initPrograms(const char* cg2_path) {
             if (queryProgram(cg_fd, BPF_CGROUP_UDP6_SENDMSG) <= 0) abort();
         }
 
-        if (isAtLeastKernelVersion(5, 4)) {
+        if (isAtLeastKernelVersion(5, 4) && hasProgQuery) {
             if (queryProgram(cg_fd, BPF_CGROUP_GETSOCKOPT) <= 0) abort();
             if (queryProgram(cg_fd, BPF_CGROUP_SETSOCKOPT) <= 0) abort();
         }
     }
 
     if (isAtLeast26Q2) {
-        if (isAtLeastKernelVersion(6, 1) && !isAtLeastKernelVersion(6, 18)) {
+        if (hasProgQuery && isAtLeastKernelVersion(6, 1) && !isAtLeastKernelVersion(6, 18)) {
             if (queryProgram(cg_fd, BPF_CGROUP_SOCK_OPS) <= 0) abort();
         }
     }

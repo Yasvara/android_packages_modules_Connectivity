@@ -20,6 +20,8 @@
 #include <memory>
 #include <vector>
 
+#include <unistd.h>
+
 #include <bpf/BpfRingbuf.h>
 #include <bpf/BpfUtils.h>
 #include <log/log.h>
@@ -34,6 +36,13 @@ using bpf::RingbufEventPoller;
 
 // static
 LocalNetEventHandler::LocalNetEventRingbuf *LocalNetEventHandler::GetRingbuf() {
+    // 4.9 kernels have no BPF ringbuf support, so this pin never
+    // exists. The constructor below aborts on error, which would kill
+    // system_server at every ConnectivityService init.
+    if (access(LOCAL_NET_NOTE_OP_RINGBUF_PATH, F_OK) != 0) {
+        ALOGW("Continuing without local net event ringbuf");
+        return nullptr;
+    }
     static LocalNetEventRingbuf *const sRingbuf =
         []() -> LocalNetEventRingbuf * {
         auto rb = std::make_unique<LocalNetEventRingbuf>(
@@ -46,8 +55,10 @@ LocalNetEventHandler::LocalNetEventRingbuf *LocalNetEventHandler::GetRingbuf() {
 // static
 std::vector<uint32_t> LocalNetEventHandler::ConsumeAll() {
     std::vector<uint32_t> uids_pids;
+    LocalNetEventRingbuf *ringbuf = GetRingbuf();
+    if (!ringbuf) return {};
     base::Result<int> ret =
-        GetRingbuf()->ConsumeAll([&](const LocalNetNoteOp &event) {
+        ringbuf->ConsumeAll([&](const LocalNetNoteOp &event) {
             uids_pids.push_back(event.uid);
             uids_pids.push_back(event.pid);
         });

@@ -1573,18 +1573,23 @@ static int doLoad(char** argv, char * const envp[]) {
         return 6;
     }
 
+    // On 4.9 kernels the BPF kernelVer is misreported (5.4.186),
+    // failing the 25Q4/26Q4 gates and aborting the whole load (nothing
+    // gets pinned, netd crash-loops). Load best-effort instead: programs
+    // using missing helpers fail individually, the essential xt programs
+    // load fine (same approach as the BpfHandler best-effort port).
     // 25Q4 bumps the kernel requirement up to 5.10
     // see also: //system/netd/tests/kernel_test.cpp TestKernel510
-    if (isAtLeast25Q4 && !isAtLeastKernelVersion(5, 10)) {
-        ALOGE("Android 25Q4 requires kernel 5.10.");
-        return 7;
-    }
+    // if (isAtLeast25Q4 && !isAtLeastKernelVersion(5, 10)) {
+    //     ALOGE("Android 25Q4 requires kernel 5.10.");
+    //     return 7;
+    // }
 
     // 26Q4 bumps the kernel requirement up to 5.15
-    if (isAtLeast26Q4 && !isAtLeastKernelVersion(5, 15)) {
-        ALOGE("Android 26Q4 requires kernel 5.15.");
-        return 7;
-    }
+    // if (isAtLeast26Q4 && !isAtLeastKernelVersion(5, 15)) {
+    //     ALOGE("Android 26Q4 requires kernel 5.15.");
+    //     return 7;
+    // }
 
     // Technically already required by U, but only enforce on V+
     // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit

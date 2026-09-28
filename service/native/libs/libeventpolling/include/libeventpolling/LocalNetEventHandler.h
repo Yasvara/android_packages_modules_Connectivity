@@ -35,8 +35,12 @@ class LocalNetEventHandler {
 
     // Returns a duplicate of the ring buffer file descriptor. This is needed so
     // we can pass the file descriptor via jni for use in polling in java.
+    // Returns an invalid fd when the ringbuf is unavailable (4.9 has
+    // no ringbuf maps); the JNI caller already handles that gracefully.
     static android::base::unique_fd GetNewRingbufFd() {
-        return GetRingbuf()->GetDuplicateFd();
+        LocalNetEventRingbuf *ringbuf = GetRingbuf();
+        if (!ringbuf) return {};
+        return ringbuf->GetDuplicateFd();
     }
 
     // Consumes all available events in the ring buffer. Returns a list of

@@ -46,12 +46,13 @@ on load-bpf-programs
     # result in 'bpf.progs_loaded' property being set to '1'.
     exec_start bpfloader
 
-    # Wait for bpf programs to be loaded before proceeding.
-    # (this will hang if bpfloader fails)
-    wait_for_prop bpf.progs_loaded 1
-
-    # Restore kallsyms protection after bpf programs have been loaded.
-    # This has to happen after bpfloader has already terminated.
+    # On 4.9 kernels bpfloader cannot load newer programs (verifier
+    # rejects missing helpers) so bpf.progs_loaded is never set to 1 and
+    # the stock wait_for_prop below hangs forever ("this will hang if
+    # bpfloader fails"). Proceed best-effort instead: our BpfHandler runs
+    # without the missing programs (stats/release attach + queryProgram
+    # probes). Restore kallsyms protection immediately since bpfloader
+    # (oneshot) has already terminated at this point.
     write /proc/sys/kernel/kptr_restrict 2
 
     # At this point 'bpf.progs_loaded' is guaranteed to be '1'

@@ -19,6 +19,8 @@
 
 #include <memory>
 
+#include <unistd.h>
+
 #include <bpf/BpfRingbuf.h>
 #include <bpf/BpfUtils.h>
 #include <log/log.h>
@@ -51,6 +53,13 @@ uint32_t convertLoopbackResult(uint32_t result) {
 // static
 bpf::RingbufEventPoller<LoopbackAccessEvent> *
 LoopbackEventHandler::GetPoller() {
+    // 4.9 kernels have no BPF ringbuf support, so this pin never
+    // exists. The constructor below aborts on error; callers already handle
+    // a null poller, so skip construction entirely.
+    if (access(LOOPBACK_ACCESS_RINGBUF_NETD_PATH, F_OK) != 0) {
+        ALOGW("Continuing without loopback event ringbuf");
+        return nullptr;
+    }
     static bpf::RingbufEventPoller<LoopbackAccessEvent> *const sPoller =
         []() -> bpf::RingbufEventPoller<LoopbackAccessEvent> * {
         auto rb = std::make_unique<BpfRingbuf<LoopbackAccessEvent>>(
